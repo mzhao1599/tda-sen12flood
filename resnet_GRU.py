@@ -1,11 +1,30 @@
-import glob, os, re, sys, numpy as np, torch, rasterio, csv, atexit, argparse, math, multiprocessing, signal, json
-from unittest import loader
+import glob, os, re, sys, numpy as np, torch, rasterio, atexit, argparse, math, multiprocessing, signal, json
 from tqdm import tqdm
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
 import random, math, os, sys, argparse, signal, atexit, glob, re, json
 import numpy as np
+from torch.utils.data import Dataset, DataLoader
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence, PackedSequence
+from safetensors.torch import load_file
+#python resnet_GRU.py
+#python resnet_GRU.py --bidirectional
+HIDDEN_SIZE   = 256
+BATCH_SIZE    = 8
+NUM_EPOCHS    = 100
+LR            = 0.001
+LR_HEAD       = 0.001          
+LR_BACKBONE   = 0.001          
+LR_GRU_HEAD   = 0.01           
+IMAGE_SIZE    = 120
+DEVICE        = "cuda" 
+DEBUG         = False         
+PROBE_ONLY    = False          
+SEQUENCE_PROBE = False          
+DEBUG_EVERY = 34
+BETA_F = math.sqrt(2) 
+BIDIRECTIONAL = False 
 DEFAULT_SEED = 1599
 GLOBAL_SEED = DEFAULT_SEED
 
@@ -23,12 +42,8 @@ def _seed_worker(worker_id: int):
     worker_seed = base + worker_id
     np.random.seed(worker_seed)
     random.seed(worker_seed)
-from torch.utils.data import Dataset, DataLoader
-from torch.nn.utils.rnn import pack_padded_sequence, PackedSequence, pad_packed_sequence
-from safetensors.torch import load_file
 
 log_file = None
-
 early_stop_requested = False
 
 def signal_handler(signum, frame):
@@ -52,32 +67,15 @@ class FileOnlyLogger:
     """Logger that only writes to file, not console"""
     def __init__(self, file_handle):
         self.file_handle = file_handle
-    
     def write(self, x):
         if self.file_handle and not self.file_handle.closed:
             self.file_handle.write(x)
-    
     def flush(self):
         if self.file_handle and not self.file_handle.closed:
             try:
                 self.file_handle.flush()
             except ValueError:
                 pass
-HIDDEN_SIZE   = 256
-BATCH_SIZE    = 8
-NUM_EPOCHS    = 100
-LR            = 0.001
-LR_HEAD       = 0.001          
-LR_BACKBONE   = 0.001          
-LR_GRU_HEAD   = 0.01           
-IMAGE_SIZE    = 120
-DEVICE        = "cuda" 
-DEBUG         = False         
-PROBE_ONLY    = False          
-SEQUENCE_PROBE = False          
-DEBUG_EVERY = 34
-BETA_F = math.sqrt(2) 
-BIDIRECTIONAL = False  # set by CLI
 
 NAME_RE = re.compile(
     r"(?P<seq>\d+)_(?P<idx_c>\d+)_([a-zA-Z0-9]+)_(?P<idx_m>\d+)_(?P<date>\d{8})_(?P<label>[01])\.(tif)$"
@@ -155,7 +153,6 @@ class CombinedSeqDataset(Dataset):
         self.s1_dir = s1_dir
         self.s2_dir = s2_dir
         all_items = []
-        
         if os.path.exists(s1_dir):
             for fname in os.listdir(s1_dir):
                 if fname.endswith('.tif'):
@@ -172,7 +169,6 @@ class CombinedSeqDataset(Dataset):
                             "lbl": int(flood),
                             "path": os.path.join(s1_dir, fname)
                         })
-        
         if os.path.exists(s2_dir):
             for fname in os.listdir(s2_dir):
                 if fname.endswith('.tif'):
@@ -193,7 +189,6 @@ class CombinedSeqDataset(Dataset):
         for item in all_items:
             seq_id = item["seq_id"]
             seqs.setdefault(seq_id, []).append(item)
-        
         self._seqs = []
         for seq_id, items in seqs.items():
             items.sort(key=lambda x: x["idx_c"])
@@ -250,87 +245,79 @@ def collate_combined(batch):
     return imgs, lbls, torch.tensor(lengths), mods, list(seq_ids)
 
 class ResNetBackbone(nn.Module):
-    def __init__(self, in_ch: int, pretrained_path: str):
+    def __init__(self, in_ch: int, pretrained_path: Optional[str] = None, load_weights: bool = True):
         super().__init__()
-        assert pretrained_path is not None, "pretrained_path is required - no random initialization allowed"
-        
         from torchvision.models import resnet50
         net = resnet50(weights=None)
-        
         net.conv1 = nn.Conv2d(in_ch, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        
-        sd = load_file(pretrained_path)
-        print(f"Loading BigEarthNet weights from {pretrained_path}")
-        print(f"  Available keys: {len(sd.keys())} total")
-        print(f"  Sample keys: {list(sd.keys())[:5]}...")
-        
-        new_sd = {}
-        for k, v in sd.items():
-            assert k.startswith("model.vision_encoder."), f"Unexpected key: {k}"
-            if k.endswith("fc.weight") or k.endswith("fc.bias"):
-                continue
-            new_sd[k.replace("model.vision_encoder.","")] = v
-        
-        print(f"  After filtering: {len(new_sd.keys())} keys for backbone")
-        
-        orig_w = new_sd.get("conv1.weight")
-        if orig_w is None:
-            raise KeyError("conv1.weight missing from checkpoint - aborting")
-        if orig_w.size(1) != in_ch:
-            raise ValueError(
-                f"Checkpoint conv1 has {orig_w.size(1)} channels, "
-                f"but model was built for {in_ch}. "
-                "Load the matching 2-channel or 10-channel safetensors."
-            )
-        
-        conv1_weight = new_sd.pop("conv1.weight")
-        
-        with torch.no_grad():
-            net.conv1.weight.copy_(conv1_weight)
-
-        missing_keys, unexpected_keys = net.load_state_dict(new_sd, strict=False)
-        print(f"  Loaded backbone weights:")
-        print(f"    Missing keys: {len(missing_keys)} - {missing_keys[:3]}{'...' if len(missing_keys) > 3 else ''}")
-        print(f"    Unexpected keys: {len(unexpected_keys)} - {unexpected_keys[:3]}{'...' if len(unexpected_keys) > 3 else ''}")
-        
-        critical_layers = ['layer1.0.conv1.weight', 'layer2.0.conv1.weight', 'layer3.0.conv1.weight', 'layer4.0.conv1.weight']
-        missing_critical = [k for k in critical_layers if k in missing_keys]
-        if missing_critical:
-            print(f"  ERROR: Critical ResNet layers missing: {missing_critical}")
-            raise RuntimeError(f"Failed to load critical backbone layers: {missing_critical}")
+        if load_weights and pretrained_path is not None:
+            sd = load_file(pretrained_path)
+            print(f"Loading BigEarthNet weights from {pretrained_path}")
+            print(f"  Available keys: {len(sd.keys())} total")
+            print(f"  Sample keys: {list(sd.keys())[:5]}...")
+            new_sd = {}
+            for k, v in sd.items():
+                assert k.startswith("model.vision_encoder."), f"Unexpected key: {k}"
+                if k.endswith("fc.weight") or k.endswith("fc.bias"):
+                    continue
+                new_sd[k.replace("model.vision_encoder.","")] = v
+            print(f"  After filtering: {len(new_sd.keys())} keys for backbone")
+            orig_w = new_sd.get("conv1.weight")
+            if orig_w is None:
+                raise KeyError("conv1.weight missing from checkpoint - aborting")
+            if orig_w.size(1) != in_ch:
+                raise ValueError(
+                    f"Checkpoint conv1 has {orig_w.size(1)} channels, "
+                    f"but model was built for {in_ch}. "
+                    "Load the matching 2-channel or 10-channel safetensors."
+                )
+            conv1_weight = new_sd.pop("conv1.weight")
+            with torch.no_grad():
+                net.conv1.weight.copy_(conv1_weight)
+            missing_keys, unexpected_keys = net.load_state_dict(new_sd, strict=False)
+            print(f"  Loaded backbone weights:")
+            print(f"    Missing keys: {len(missing_keys)} - {missing_keys[:3]}{'...' if len(missing_keys) > 3 else ''}")
+            print(f"    Unexpected keys: {len(unexpected_keys)} - {unexpected_keys[:3]}{'...' if len(unexpected_keys) > 3 else ''}")
+            critical_layers = ['layer1.0.conv1.weight', 'layer2.0.conv1.weight', 'layer3.0.conv1.weight', 'layer4.0.conv1.weight']
+            missing_critical = [k for k in critical_layers if k in missing_keys]
+            if missing_critical:
+                print(f"  ERROR: Critical ResNet layers missing: {missing_critical}")
+                raise RuntimeError(f"Failed to load critical backbone layers: {missing_critical}")
+            else:
+                print(f"  [OK] All critical ResNet layers loaded successfully")
         else:
-            print(f"  [OK] All critical ResNet layers loaded successfully")
-        
+            if not load_weights:
+                print("[INFO] Skipping pretrained backbone load (will rely on checkpoint weights).")
         self.features = nn.Sequential(*list(net.children())[:-1])
     def forward(self, x):
         return self.features(x).flatten(1)
 
 class ResNetGRU(nn.Module):
-    def __init__(self, in_ch: int, pretrained_path: str, log_odds_bias: float = 0.0, bidirectional: bool = False):
+    def __init__(self, in_ch: int, pretrained_path: Optional[str] = None, log_odds_bias: float = 0.0, bidirectional: bool = False, load_backbone: bool = True):
         super().__init__()
-        self.encoder = ResNetBackbone(in_ch, pretrained_path)
+        self.encoder = ResNetBackbone(in_ch, pretrained_path, load_weights=load_backbone)
         self.bidirectional = bidirectional
         self.num_directions = 2 if bidirectional else 1
         self.gru     = nn.GRU(2048, HIDDEN_SIZE, batch_first=True, bidirectional=bidirectional)
         self.dropout = nn.Identity()
         self.head    = nn.Linear(HIDDEN_SIZE * self.num_directions, 1)
-        
         init_classification_bias(self, log_odds_bias)
-
     def forward(self, imgs: torch.Tensor, lengths: torch.Tensor):
+        """Return logits over packed data PLUS the full PackedSequence for proper reconstruction.
+
+        logits shape: (total_valid_frames,) corresponding to packed_out.data.
+        Returned packed_out allows downstream code to recover original per-sequence ordering.
+        """
         B, T, C, H, W = imgs.shape
-        
-        mask_frames = torch.arange(T, device=imgs.device)\
-                        .unsqueeze(0).expand(B, -1) < lengths.unsqueeze(1)
-        flat_imgs  = imgs[mask_frames]                
+        mask_frames = torch.arange(T, device=imgs.device).unsqueeze(0).expand(B, -1) < lengths.unsqueeze(1)
+        flat_imgs  = imgs[mask_frames]
         feats_flat = self.encoder(flat_imgs)
-        
         feats      = torch.zeros(B, T, 2048, device=imgs.device)
         feats[mask_frames] = feats_flat
         packed = pack_padded_sequence(feats, lengths.cpu(), batch_first=True, enforce_sorted=False)
         packed_out, _ = self.gru(packed)
         logits = self.head(packed_out.data).squeeze(-1)
-        return logits, packed_out.batch_sizes
+        return logits, packed_out  
     def step(self, frame_img: torch.Tensor, h_prev=None):
         if self.bidirectional:
             raise NotImplementedError("Bidirectional GRU does not support step-wise inference")
@@ -351,7 +338,6 @@ class DualResNetGRU(nn.Module):
             return self.encoder_s2(frame_img)
         else:
             raise ValueError(f"Invalid modality: {modality}")
-
     def __init__(self,
                  s1_ckpt: Optional[str] = None,
                  s2_ckpt: Optional[str] = None,
@@ -362,7 +348,6 @@ class DualResNetGRU(nn.Module):
         super().__init__()
         assert be_s1 is not None, "BigEarthNet S1 weights (be_s1) are required"
         assert be_s2 is not None, "BigEarthNet S2 weights (be_s2) are required"
-        
         self.encoder_s1 = ResNetBackbone(2, be_s1)
         self.encoder_s2 = ResNetBackbone(10, be_s2)
         self.mod_embed = nn.Embedding(2, 16)  
@@ -402,10 +387,8 @@ class DualResNetGRU(nn.Module):
         if idx_s2.numel() > 0:
             x_s2 = flat_imgs[idx_s2]
             feats_flat[idx_s2] = self.encoder_s2(x_s2)
-
         mod_embeddings = self.mod_embed(flat_mods)
         feats_flat = torch.cat([feats_flat, mod_embeddings], dim=-1)
-
         feats = torch.zeros(B, T, 2048 + 16, device=imgs.device)
         feats[mask_frames] = feats_flat
         packed = pack_padded_sequence(feats, lengths.cpu(), batch_first=True, enforce_sorted=False)
@@ -436,12 +419,9 @@ def weighted_bce_loss(logits, packed_labels: PackedSequence, pos_weight: float =
         torch.Tensor: Scalar loss value
     """
     targets = packed_labels.data.float()
-    
     assert torch.all((targets == 0) | (targets == 1)), \
         f"Invalid label values detected: {torch.unique(targets)}"
-    
     pos_weight_tensor = torch.tensor([pos_weight], device=logits.device)
-    
     loss = F.binary_cross_entropy_with_logits(logits, targets,pos_weight=pos_weight_tensor,  reduction='mean')
     return loss
 
@@ -461,7 +441,6 @@ def calculate_class_weights_and_bias(dataset, indices):
     """
     total_frames = 0
     positive_frames = 0
-    
     for idx in indices:
         if hasattr(dataset, '_seqs'):
             seq_items = dataset._seqs[idx]
@@ -481,24 +460,17 @@ def calculate_class_weights_and_bias(dataset, indices):
                 frame_labels = [item[2] for item in seq_items]
             else:
                 frame_labels = [item.get('lbl', 0) for item in seq_items]
-        
         total_frames += len(frame_labels)
         positive_frames += sum(frame_labels)
-    
     if total_frames == 0:
         print("  WARNING: No frames found, using default weights")
         return 2.5, -2.197, 0.1  
-        
     positive_rate = positive_frames / total_frames
     negative_rate = 1.0 - positive_rate
-    
     positive_rate = max(0.001, min(0.999, positive_rate))
     negative_rate = max(0.001, min(0.999, negative_rate))
-    
     pos_weight = negative_rate / positive_rate
-    
     log_odds_bias = math.log(positive_rate / negative_rate)
-    
     print(f"  Dataset statistics:")
     print(f"    Total frames: {total_frames}")
     print(f"    Positive frames: {positive_frames} ({positive_rate:.3f})")
@@ -547,7 +519,7 @@ def validation_sweep(model, val_loader, is_dual=False, thresholds=None, modality
                     imgs,lbls,lengths,mods=batch
                 imgs,lengths,mods=imgs.to(DEVICE),lengths.to(DEVICE),mods.to(DEVICE)
                 packed_lbls=pack_padded_sequence(lbls.to(DEVICE), lengths.cpu(), batch_first=True, enforce_sorted=False)
-                logits,_=model(imgs,lengths,mods)
+                logits,packed_meta=model(imgs,lengths,mods)
             else:
                 if len(batch)==4:
                     imgs,lbls,lengths,seq_ids=batch
@@ -555,17 +527,31 @@ def validation_sweep(model, val_loader, is_dual=False, thresholds=None, modality
                     imgs,lbls,lengths=batch
                 imgs,lengths=imgs.to(DEVICE),lengths.to(DEVICE)
                 packed_lbls=pack_padded_sequence(lbls.to(DEVICE), lengths.cpu(), batch_first=True, enforce_sorted=False)
-                logits,_=model(imgs,lengths)
+                logits,packed_meta=model(imgs,lengths)
             probs=torch.sigmoid(logits)
             all_probs.extend(probs.cpu().numpy())
             all_labels.extend(packed_lbls.data.cpu().numpy())
-            start=0; B=lengths.size(0)
-            for i in range(B):
-                L=lengths[i].item()
-                seq_probs=probs[start:start+L].cpu().numpy(); seq_lbls=lbls[i,:L].cpu().numpy()
-                sid=seq_ids[i] if seq_ids is not None else f"seq_{len(sequence_details)}"
-                sequence_details.append({'real_seq_id':sid,'probs':seq_probs,'labels':seq_lbls})
-                start+=L
+            if isinstance(packed_meta, PackedSequence):
+                packed_out = packed_meta
+                out_padded, lengths_sorted = pad_packed_sequence(packed_out, batch_first=True)
+                if packed_out.unsorted_indices is not None:
+                    out_padded = out_padded[packed_out.unsorted_indices]
+                B_cur = lengths.size(0)
+                for i in range(B_cur):
+                    L = lengths[i].item()
+                    frame_outs = out_padded[i, :L, :]
+                    frame_logits = model.head(frame_outs).squeeze(-1)
+                    seq_probs = torch.sigmoid(frame_logits).cpu().numpy()
+                    seq_lbls = lbls[i, :L].cpu().numpy()
+                    sid = seq_ids[i] if seq_ids is not None else f"seq_{len(sequence_details)}"
+                    sequence_details.append({'real_seq_id': sid, 'probs': seq_probs, 'labels': seq_lbls, 'length': L})
+            else:
+                start = 0; Bc = lengths.size(0)
+                for i in range(Bc):
+                    L = lengths[i].item()
+                    seq_probs = probs[start:start+L].cpu().numpy(); seq_lbls = lbls[i, :L].cpu().numpy()
+                    sid = seq_ids[i] if seq_ids is not None else f"seq_{len(sequence_details)}"
+                    sequence_details.append({'real_seq_id': sid, 'probs': seq_probs, 'labels': seq_lbls, 'length': L})
     all_probs=np.array(all_probs); all_labels=np.array(all_labels)
     results=[]
     for th in thresholds:
@@ -596,6 +582,45 @@ def validation_sweep(model, val_loader, is_dual=False, thresholds=None, modality
         print(f"Threshold source: {source}")
     return {'all_results':results,'best_f1':best_f1,'best_accuracy':None,'best_recall_at_90p':(None if fallback_used else deploy_metrics),'optimal_threshold':optimal_threshold,'deploy_metrics':deploy_metrics,'sequence_details':sequence_details,'threshold_source':source,'fallback_used':fallback_used}
 
+@torch.no_grad()
+def rebuild_sequence_details(model, val_loader, is_dual: bool):
+    """Recompute per-sequence probabilities in natural order (slow but reliable).
+
+    Mirrors convert_resnet_predictions.rebuild_sequence_details to avoid any
+    PackedSequence ordering ambiguity and to guarantee one-to-one alignment
+    between probs and labels per sequence.
+    """
+    rebuilt = []
+    model.eval()
+    for batch in val_loader:
+        if is_dual:
+            if len(batch) == 5:
+                imgs, lbls, lengths, mods, seq_ids = batch
+            else:
+                imgs, lbls, lengths, mods = batch
+                seq_ids = [f"seq_{i}" for i in range(lengths.size(0))]
+        else:
+            if len(batch) == 4:
+                imgs, lbls, lengths, seq_ids = batch
+            else:
+                imgs, lbls, lengths = batch
+                seq_ids = [f"seq_{i}" for i in range(lengths.size(0))]
+        B = lengths.size(0)
+        for i in range(B):
+            L = int(lengths[i].item())
+            seq_imgs = imgs[i, :L].unsqueeze(0).to(DEVICE)
+            seq_lengths = torch.tensor([L], device=DEVICE)
+            if is_dual:
+                seq_mods = mods[i, :L].unsqueeze(0).to(DEVICE)
+                logits, _ = model(seq_imgs, seq_lengths, seq_mods)
+            else:
+                logits, _ = model(seq_imgs, seq_lengths)
+            probs = torch.sigmoid(logits).cpu().numpy()
+            labels = lbls[i, :L].cpu().numpy()
+            sid = seq_ids[i]
+            rebuilt.append({'real_seq_id': sid, 'probs': probs, 'labels': labels, 'length': L})
+    return rebuilt
+
 def calculate_positive_rate(dataset, indices):
     """
     Calculate the positive rate (flood frames) in the given dataset indices.
@@ -623,24 +648,20 @@ def inspect_checkpoint(checkpoint_path: str):
     try:
         sd = load_file(checkpoint_path)
         print(f"Total keys: {len(sd.keys())}")
-        
+
         conv1_keys = [k for k in sd.keys() if 'conv1' in k]
         print(f"Conv1 keys: {conv1_keys}")
-        
         if 'model.vision_encoder.conv1.weight' in sd:
             conv1_weight = sd['model.vision_encoder.conv1.weight']
             print(f"Conv1 weight shape: {conv1_weight.shape}")
             print(f"Conv1 channels: {conv1_weight.shape[1]} (expected: 2 for S1, 10 for S2)")
         else:
             print("WARNING: Conv1 weight not found!")
-        
         critical_prefixes = ['layer1', 'layer2', 'layer3', 'layer4']
         for prefix in critical_prefixes:
             matching_keys = [k for k in sd.keys() if prefix in k]
             print(f"{prefix} keys: {len(matching_keys)} found")
-        
         print(f"Sample keys: {list(sd.keys())[:10]}")
-        
     except Exception as e:
         print(f"ERROR inspecting checkpoint: {e}")
     print("=" * 50)
@@ -649,7 +670,6 @@ def filter_positive_sequences(dataset_indices, dataset):
     """Filter dataset indices to only include sequences with at least one flood frame"""
     positive_indices = []
     total_sequences = len(dataset_indices)
-    
     for idx in dataset_indices:
         if hasattr(dataset, '_seqs'):
             seq_items = dataset._seqs[idx]
@@ -658,10 +678,8 @@ def filter_positive_sequences(dataset_indices, dataset):
             original_idx = dataset.indices[idx] if hasattr(dataset, 'indices') else idx
             seq_items = dataset.dataset._seqs[original_idx] if hasattr(dataset, 'dataset') else dataset._seqs[original_idx]
             has_flood = any(item.get('lbl', 0) == 1 for item in seq_items)
-        
         if has_flood:
             positive_indices.append(idx)
-    
     print(f"  Filtered to positive sequences: {len(positive_indices)}/{total_sequences} ({100*len(positive_indices)/total_sequences:.1f}%)")
     return positive_indices
 
@@ -699,12 +717,10 @@ def setup_differential_optimizer(model, resnet_lr=0.0001, gru_lr=0.001, is_dual=
     else:
         resnet_params = list(model.encoder.parameters())
         gru_head_params = list(model.gru.parameters()) + list(model.head.parameters())
-    
     param_groups = [
         {'params': resnet_params, 'lr': resnet_lr, 'name': 'resnet'},
         {'params': gru_head_params, 'lr': gru_lr, 'name': 'gru_head'}
     ]
-    
     return torch.optim.Adam(param_groups)
 
 def train_one_epoch(model, loader, optim, pos_weight: float = 2.5, is_dual=False):
@@ -720,7 +736,6 @@ def train_one_epoch(model, loader, optim, pos_weight: float = 2.5, is_dual=False
                 raise ValueError(f"Unexpected dual batch length {len(batch)}")
             imgs, lengths, mods = imgs.to(DEVICE), lengths.to(DEVICE), mods.to(DEVICE)
             packed_lbls = pack_padded_sequence(lbls.to(DEVICE), lengths.cpu(), batch_first=True, enforce_sorted=False)
-            
             logits,_ = model(imgs,lengths,mods)
             loss = weighted_bce_loss(logits, packed_lbls, pos_weight)
             optim.zero_grad()
@@ -737,13 +752,10 @@ def train_one_epoch(model, loader, optim, pos_weight: float = 2.5, is_dual=False
                     print(f"[gruv3-DUAL] step {step:05d}  "
                           f"loss={loss.item():.4f}  mean={probs.mean():.3f} std={probs.std():.3f}  "
                           f"pos={pos:.3f}  grad_norm={gnorm:.2f}")
-
             total_loss += loss.item()*packed_lbls.data.numel()   
-            
             preds = (torch.sigmoid(logits)>.5).long()
             hit += (preds==packed_lbls.data.long()).sum().item()
-            tot += len(packed_lbls.data)
-            
+            tot += len(packed_lbls.data) 
     else:
         for batch in tqdm(loader, desc="Train", leave=False):
             if len(batch) == 4:
@@ -752,13 +764,11 @@ def train_one_epoch(model, loader, optim, pos_weight: float = 2.5, is_dual=False
                 imgs, lbls, lengths = batch
             imgs, lengths = imgs.to(DEVICE), lengths.to(DEVICE)
             packed_lbls = pack_padded_sequence(lbls.to(DEVICE), lengths.cpu(), batch_first=True, enforce_sorted=False)
-            
             logits, _ = model(imgs, lengths)
             loss = weighted_bce_loss(logits, packed_lbls, pos_weight)
             optim.zero_grad()
             loss.backward() 
             optim.step()
-
             step += 1
             if DEBUG and step % DEBUG_EVERY == 0:
                 with torch.no_grad():
@@ -770,13 +780,10 @@ def train_one_epoch(model, loader, optim, pos_weight: float = 2.5, is_dual=False
                     print(f"[gruv3-SINGLE] step {step:05d}  "
                           f"loss={loss.item():.4f}  mean={probs.mean():.3f} std={probs.std():.3f}  "
                           f"pos={pos:.3f}  grad_norm={gnorm:.2f}")
-
             total_loss += loss.item() * packed_lbls.data.numel()   
-            
             preds = (torch.sigmoid(logits) > .5).long()
             hit  += (preds == packed_lbls.data.long()).sum().item()
             tot  += len(packed_lbls.data)
-            
     return total_loss / tot, hit / tot
 @torch.no_grad()
 def eval_epoch(model, loader, pos_weight: float = 2.5, is_dual=False):
@@ -885,7 +892,8 @@ def run_training(s1_dir: str, s2_dir: str, modality: str = "s1", epochs: int = N
             be_s2="pretrained_models/resnet50-s2-v0.2.0/model.safetensors",
             log_odds_bias=log_odds_bias,
             bidirectional=bidirectional).to(DEVICE)
-        checkpoint_name = "dual_resnet_gru_best_mixed_bi.pt" if bidirectional else "dual_resnet_gru_best_mixed.pt"
+        direction_tag = 'bi' if bidirectional else 'uni'
+        checkpoint_name = f"dual_resnet_gru_best_mixed_{direction_tag}.pt"
         try:
             if os.path.exists(checkpoint_name):
                 print(f"  Loading existing dual checkpoint: {checkpoint_name}")
@@ -928,7 +936,8 @@ def run_training(s1_dir: str, s2_dir: str, modality: str = "s1", epochs: int = N
         val_dl   = DataLoader(val_set,   BATCH_SIZE, shuffle=False, collate_fn=collate_pad,
                               num_workers=num_workers, pin_memory=False, worker_init_fn=_seed_worker, generator=g)
         model = ResNetGRU(channels, model_path, log_odds_bias, bidirectional=bidirectional).to(DEVICE)
-        checkpoint_name = f"resnet_gru_{modality}_finetune_bi.pt" if bidirectional else f"resnet_gru_{modality}_finetune.pt"
+        direction_tag = 'bi' if bidirectional else 'uni'
+        checkpoint_name = f"resnet_gru_{modality}_finetune_{direction_tag}.pt"
         try:
             if os.path.exists(checkpoint_name):
                 print(f"  Loading existing {modality.upper()} checkpoint: {checkpoint_name}")
@@ -936,9 +945,7 @@ def run_training(s1_dir: str, s2_dir: str, modality: str = "s1", epochs: int = N
         except Exception as e:
             print(f"  [WARN] Could not load checkpoint: {e}")
         is_dual = False
-
     optim = setup_differential_optimizer(model, resnet_lr=0.0001, gru_lr=0.001, is_dual=is_dual)
-
     best_fbeta = -1.0; best_f1_at_best_fbeta = 0.0; best_epoch = 0; patience = 20
     bias_val = 0.0
     if hasattr(model, 'head') and hasattr(model.head, 'bias') and model.head.bias is not None:
@@ -947,6 +954,7 @@ def run_training(s1_dir: str, s2_dir: str, modality: str = "s1", epochs: int = N
         except Exception:
             pass
     print(f"  pos_weight={pos_weight:.3f}  bias={bias_val:.3f}")
+    direction_tag = 'bi' if bidirectional else 'uni'
     for epoch in range(1, epochs+1):
         tr_loss, tr_acc = train_one_epoch(model, train_dl, optim, pos_weight, is_dual=is_dual)
         va_loss, va_acc, (TP_f, FP_f, TN_f, FN_f), (TP_s, FP_s, TN_s, FN_s) = eval_epoch(model, val_dl, pos_weight, is_dual=is_dual)
@@ -967,11 +975,15 @@ def run_training(s1_dir: str, s2_dir: str, modality: str = "s1", epochs: int = N
         if epoch - best_epoch >= patience:
             print(f"Early stopping (no Fβ improvement for {patience} epochs)")
             break
-
     print(f"\nLoading best epoch {best_epoch} (Fβ={best_fbeta:.4f}, F1={best_f1_at_best_fbeta:.4f}) for sweep...")
     model.load_state_dict(torch.load(checkpoint_name, map_location=DEVICE))
     sweep_results = validation_sweep(model, val_dl, is_dual=is_dual, modality=modality)
-    save_detailed_predictions_to_file(sweep_results, checkpoint_dir, modality)
+    try:
+        rebuilt = rebuild_sequence_details(model, val_dl, is_dual=is_dual)
+        sweep_results['sequence_details'] = rebuilt
+    except Exception as e:
+        print(f"[WARN] rebuild_sequence_details failed, using sweep reconstruction: {e}")
+    save_detailed_predictions_to_file(sweep_results, checkpoint_dir, modality, direction_tag)
     print(f"Best {('DUAL' if is_dual else modality.upper())}{'-BI' if bidirectional else ''} val-Fβ: {best_fbeta:.3f} (F1={best_f1_at_best_fbeta:.3f}) @ epoch {best_epoch}")
     dm = sweep_results['deploy_metrics']; b2 = BETA_F*BETA_F
     deploy_fbeta = (1+b2)*dm['precision']*dm['recall']/(b2*dm['precision']+dm['recall']) if (b2*dm['precision']+dm['recall'])>0 else 0.0
@@ -980,25 +992,50 @@ def run_training(s1_dir: str, s2_dir: str, modality: str = "s1", epochs: int = N
     print(f"Expected Fβ={deploy_fbeta:.4f} F1={dm['f1']:.4f} P={dm['precision']:.4f} R={dm['recall']:.4f}")
     return sweep_results
 
-def save_detailed_predictions_to_file(sweep_results, checkpoint_dir, modality):
-    """Write per-frame probabilities with 0.5 and optimal threshold predictions."""
-    predictions_file = os.path.join(checkpoint_dir, f"{modality}_detailed_predictions.txt")
+def save_detailed_predictions_to_file(sweep_results, checkpoint_dir, modality, direction_tag: Optional[str] = None):
+    """Write per-frame probabilities in topoGE-style format for late fusion consistency.
+
+    Format:
+      Optimal threshold: <val>
+      Format: frame_idx prob label pred@0.50 pred@opt
+
+      SEQ <seq_id> len=<L> positives=<P>
+        000 0.1234 0 0 0
+        ...
+    """
+    if direction_tag:
+        predictions_file = os.path.join(checkpoint_dir, f"{modality}_{direction_tag}_resnet_detailed_predictions.txt")
+    else:
+        predictions_file = os.path.join(checkpoint_dir, f"{modality}_resnet_detailed_predictions.txt")
     opt_th = sweep_results.get('optimal_threshold', 0.5)
     seq_details = sweep_results.get('sequence_details', [])
     if not seq_details:
         print('[WARN] No sequence_details to save.')
         return
+    for sd in seq_details:
+        if 'length' not in sd:
+            probs = sd.get('probs', [])
+            sd['length'] = len(probs)
+    def _seq_key(d):
+        try:
+            return int(d.get('real_seq_id', ''))
+        except Exception:
+            return 10**9
     try:
         with open(predictions_file, 'w') as f:
-            f.write(f"# modality={modality} optimal_threshold={opt_th:.4f} source={sweep_results.get('threshold_source','n/a')}\n")
-            f.write("seq_id\tframe_idx\tprob\tlabel\tpred_05\tpred_opt\n")
-            for sd in seq_details:
-                sid = sd.get('real_seq_id','unknown'); probs = sd['probs']; labels = sd['labels']
+            f.write(f"Optimal threshold: {opt_th:.4f}\n")
+            f.write("Format: frame_idx prob label pred@0.50 pred@opt\n\n")
+            for sd in sorted(seq_details, key=_seq_key):
+                sid = sd.get('real_seq_id','unknown')
+                probs = sd['probs']; labels = sd['labels']
+                L = sd.get('length', len(probs)); positives = int(sum(labels))
+                f.write(f"SEQ {sid} len={L} positives={positives}\n")
                 for j,(p,lbl) in enumerate(zip(probs,labels)):
                     pred05 = 1 if p >= 0.5 else 0
                     predOpt = 1 if p >= opt_th else 0
-                    f.write(f"{sid}\t{j}\t{p:.6f}\t{int(lbl)}\t{pred05}\t{predOpt}\n")
-        print(f"Saved detailed predictions -> {predictions_file}")
+                    f.write(f"  {j:03d} {p:.4f} {int(lbl)} {pred05} {predOpt}\n")
+                f.write("\n")
+        print(f"Saved detailed predictions (topoGE format) -> {predictions_file}")
     except Exception as e:
         print(f"[ERROR] Failed writing predictions: {e}")
 
@@ -1008,10 +1045,8 @@ class ProbeSeqDataset(Dataset):
         assert modality in {"s1", "s2"}
         self.modality = modality
         self.json_path = json_path
-        
         with open(json_path, 'r') as f:
             self.json_data = json.load(f)
-        
         paths = glob.glob(os.path.join(root_dir, "*.tif"))
         assert paths, f"No .tif found in {root_dir}"
         buckets = {}
@@ -1019,12 +1054,10 @@ class ProbeSeqDataset(Dataset):
             seq, idx_c, _ = parse_name(p)  
             original_label = self._get_original_label(seq, p)
             buckets.setdefault(seq, []).append((idx_c, p, original_label))
-        
         self._seqs = []
         for seq_id, items in buckets.items():
             items.sort(key=lambda t: t[0])
             self._seqs.append(items)
-    
     def _get_original_label(self, seq: str, path: str) -> int:
         """Get original flood label from JSON metadata."""
         filename = os.path.basename(path)
@@ -1041,7 +1074,6 @@ class ProbeSeqDataset(Dataset):
         return 0
     def __len__(self):
         return len(self._seqs)
-    
     def __getitem__(self, idx):
         items = self._seqs[idx]
         imgs, labels = [], []
@@ -1065,50 +1097,39 @@ def has_flood_in_sequence(seq_items, dataset_type="single"):
 def run_linear_probe(root: str, modality: str = "s1", probe_type: str = "frame"):
     """Unified linear probe function using original JSON flood labels."""
     print(f"\n=== {modality.upper()} {probe_type.title()}-Level Linear Probe ===")
-    
     try:
         from sklearn.linear_model import LogisticRegression
         from sklearn.metrics import roc_auc_score, accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
     except ImportError:
         print("ERROR: sklearn not available. Install with: pip install scikit-learn")
         return
-    
     json_file = f"S{1 if modality == 's1' else 2}list.json"
     json_path = os.path.join("/home/erhai/Desktop/Flood", json_file)
-    
     if not os.path.exists(json_path):
         print(f"ERROR: JSON file not found: {json_path}")
         return
-    
     print(f"Using original flood labels from: {json_path}")
     
     def _get_single_features(mod_root, mod_name):
         channels = 2 if mod_name == "s1" else 10
         model_path = f"pretrained_models/resnet50-{mod_name}-v0.2.0/model.safetensors"
-        
         ds_full = ProbeSeqDataset(mod_root, mod_name, json_path)
         val_indices, train_indices = [], []
         for i, seq in enumerate(ds_full._seqs):
             seq_id = os.path.basename(seq[0][1]).split('_')[0]
             (val_indices if len(seq_id)<4 and seq_id.isdigit() else train_indices).append(i)
-        
         train_set = torch.utils.data.Subset(ds_full, train_indices)
         val_set = torch.utils.data.Subset(ds_full, val_indices)
         train_dl = DataLoader(train_set, batch_size=16, shuffle=False, collate_fn=collate_pad, num_workers=4)
         val_dl = DataLoader(val_set, batch_size=16, shuffle=False, collate_fn=collate_pad, num_workers=4)
-        
         encoder = ResNetBackbone(channels, model_path).to(DEVICE)
         encoder.eval()
-        
         train_features, train_labels = _extract_features(train_dl, encoder, mod_name, probe_type, "train")
         val_features, val_labels = _extract_features(val_dl, encoder, mod_name, probe_type, "val")
-        
         return train_features, train_labels, val_features, val_labels
-    
     if modality == "dual":
         train_f_s1, train_l_s1, val_f_s1, val_l_s1 = _get_single_features(os.path.join(root, "s1/img"), "s1")
         train_f_s2, train_l_s2, val_f_s2, val_l_s2 = _get_single_features(os.path.join(root, "s2/img"), "s2")
-        
         X_train = torch.stack(train_f_s1 + train_f_s2).numpy()
         y_train = np.array(train_l_s1 + train_l_s2)
         X_test = torch.stack(val_f_s1 + val_f_s2).numpy()
@@ -1119,23 +1140,18 @@ def run_linear_probe(root: str, modality: str = "s1", probe_type: str = "frame")
         y_train = np.array(train_labels)
         X_test = torch.stack(val_features).numpy()
         y_test = np.array(val_labels)
-    
     print(f"Original JSON labels - Train: {np.sum(y_train)} positive / {len(y_train)} total ({np.mean(y_train):.3f})")
     print(f"Original JSON labels - Test:  {np.sum(y_test)} positive / {len(y_test)} total ({np.mean(y_test):.3f})")
-    
     lr = LogisticRegression(class_weight='balanced', max_iter=2000, random_state=42)
     lr.fit(X_train, y_train)
-    
     train_preds = lr.predict(X_train)
     test_preds = lr.predict(X_test)
     train_probs = lr.predict_proba(X_train)[:, 1]
     test_probs = lr.predict_proba(X_test)[:, 1]
-    
     train_auc = roc_auc_score(y_train, train_probs)
     test_auc = roc_auc_score(y_test, test_probs)
     train_acc = accuracy_score(y_train, train_preds)
     test_acc = accuracy_score(y_test, test_preds)
-    
     train_cm = confusion_matrix(y_train, train_preds)
     test_cm = confusion_matrix(y_test, test_preds)
     train_f1 = f1_score(y_train, train_preds)
@@ -1144,22 +1160,17 @@ def run_linear_probe(root: str, modality: str = "s1", probe_type: str = "frame")
     test_precision = precision_score(y_test, test_preds)
     train_recall = recall_score(y_train, train_preds)
     test_recall = recall_score(y_test, test_preds)
-    
     print(f"\n=== {modality.upper()} {probe_type.title()}-Level Probe Results (Original JSON Labels) ===")
     print(f"Train AUC: {train_auc:.4f} | Train Acc: {train_acc:.4f} | Train F1: {train_f1:.4f}")
     print(f"Test AUC:  {test_auc:.4f} | Test Acc:  {test_acc:.4f} | Test F1:  {test_f1:.4f}")
-    
     print(f"\nTrain Metrics: P={train_precision:.4f} R={train_recall:.4f}")
     print(f"Test Metrics:  P={test_precision:.4f} R={test_recall:.4f}")
-    
     print(f"\nTrain Confusion Matrix:")
     print(f"  TN={train_cm[0,0]} FP={train_cm[0,1]}")
     print(f"  FN={train_cm[1,0]} TP={train_cm[1,1]}")
-    
     print(f"\nTest Confusion Matrix:")
     print(f"  TN={test_cm[0,0]} FP={test_cm[0,1]}")
     print(f"  FN={test_cm[1,0]} TP={test_cm[1,1]}")
-    
     return test_auc, test_acc, test_f1
 
 def _extract_features(dataloader, encoder, modality, probe_type, split_name):
@@ -1220,12 +1231,9 @@ def parse_args():
     return parser.parse_args()
 
 def main():
-    global DEBUG, PROBE_ONLY, SEQUENCE_PROBE, NUM_EPOCHS, BATCH_SIZE, LR, LR_HEAD, log_file, BIDIRECTIONAL
-    
+    global DEBUG, PROBE_ONLY, SEQUENCE_PROBE, NUM_EPOCHS, BATCH_SIZE, LR, LR_HEAD, log_file
     signal.signal(signal.SIGINT, signal_handler)
-    
     args = parse_args()
-    
     DEBUG = args.debug
     PROBE_ONLY = args.probe
     SEQUENCE_PROBE = args.sequence_probe
@@ -1233,52 +1241,41 @@ def main():
     BATCH_SIZE = args.batch_size
     LR = args.lr
     LR_HEAD = args.lr_head
-    BIDIRECTIONAL = args.bidirectional
     global GLOBAL_SEED
     GLOBAL_SEED = args.seed
     set_global_determinism(GLOBAL_SEED)
     print(f"Determinism: seed={GLOBAL_SEED}")
     s1_dir = args.s1_dir
     s2_dir = args.s2_dir
-    
     s1_exists = os.path.exists(s1_dir) and os.path.isdir(s1_dir)
     s2_exists = os.path.exists(s2_dir) and os.path.isdir(s2_dir)
-    
     if not s1_exists and not s2_exists:
         print(f"ERROR: Neither S1 directory ({s1_dir}) nor S2 directory ({s2_dir}) exists!")
         return
-    
     log_file_path = "resnet_gru.txt"
     log_file = open(log_file_path, "a", buffering=1)  
     atexit.register(log_file.close)
     sys.stdout = Tee() 
     print(f"Log file: {log_file_path}")
-    
     if PROBE_ONLY:
         print("=== LINEAR PROBE SANITY CHECK MODE ===")
-        
         probe_type = "sequence" if SEQUENCE_PROBE else "frame"
-        
         if s1_exists:
             s1_stacked = os.path.join(s1_dir, "stacked")
             s1_probe_dir = s1_stacked if os.path.exists(s1_stacked) else s1_dir
             
             print(f"S1 probe directory: {s1_probe_dir}")
-            
             try:
                 print(f"\n=== Running S1 {probe_type}-level probe ===")
                 run_linear_probe(s1_probe_dir, "s1", probe_type)
             except Exception as e:
                 print(f"S1 probe failed: {e}")
         else:
-            print("S1 directory not found - skipping S1 probe")
-            
+            print("S1 directory not found - skipping S1 probe")  
         if s2_exists:
             s2_stacked = os.path.join(s2_dir, "stacked")
             s2_probe_dir = s2_stacked if os.path.exists(s2_stacked) else s2_dir
-            
             print(f"S2 probe directory: {s2_probe_dir}")
-            
             try:
                 print(f"\n=== Running S2 {probe_type}-level probe ===")
                 run_linear_probe(s2_probe_dir, "s2", probe_type)
@@ -1289,7 +1286,6 @@ def main():
             
         print("\n=== LINEAR PROBE COMPLETED ===")
         return
-    
     print(f"Training configuration:")
     print(f"  S1 directory: {s1_dir} ({'exists' if s1_exists else 'NOT FOUND'})")
     print(f"  S2 directory: {s2_dir} ({'exists' if s2_exists else 'NOT FOUND'})")
@@ -1298,11 +1294,9 @@ def main():
     print(f"  Batch size: {BATCH_SIZE}")
     print(f"  Learning rate: {LR}")
     print(f"  Head learning rate: {LR_HEAD}")
-    print(f"  Bidirectional GRU: {BIDIRECTIONAL}")
-    
+    print(f"  Bidirectional GRU: {args.bidirectional}")
     mode = args.mode
     skip_probes = args.skip_probes
-
     def maybe_run_probes(which: str):
         if skip_probes:
             print(f"Skipping probes (--skip-probes) for {which} mode")
@@ -1320,9 +1314,7 @@ def main():
                 run_linear_probe(s2_dir, "s2", probe_type)
             except Exception as e:
                 print(f"S2 probe failed: {e}")
-
     global early_stop_requested
-
     if mode == 'dual':
         if not (s1_exists and s2_exists):
             print("ERROR: dual mode requires both S1 and S2 directories present")
@@ -1330,7 +1322,7 @@ def main():
         print("\n=== DUAL-ONLY MODE ===")
         maybe_run_probes("full")  
         try:
-            run_training(s1_dir, s2_dir, "dual", epochs=NUM_EPOCHS, bidirectional=BIDIRECTIONAL)
+            run_training(s1_dir, s2_dir, "dual", epochs=NUM_EPOCHS, bidirectional=args.bidirectional)
         except Exception as e:
             print(f"Dual training failed: {e}")
         return
@@ -1341,7 +1333,7 @@ def main():
         print("\n=== S1-ONLY MODE ===")
         maybe_run_probes("s1")
         try:
-            run_training(s1_dir, s2_dir, "s1", epochs=NUM_EPOCHS, bidirectional=BIDIRECTIONAL)
+            run_training(s1_dir, s2_dir, "s1", epochs=NUM_EPOCHS, bidirectional=args.bidirectional)
         except Exception as e:
             print(f"S1 training failed: {e}")
         return
@@ -1352,32 +1344,30 @@ def main():
         print("\n=== S2-ONLY MODE ===")
         maybe_run_probes("s2")
         try:
-            run_training(s1_dir, s2_dir, "s2", epochs=NUM_EPOCHS, bidirectional=BIDIRECTIONAL)
+            run_training(s1_dir, s2_dir, "s2", epochs=NUM_EPOCHS, bidirectional=args.bidirectional)
         except Exception as e:
             print(f"S2 training failed: {e}")
         return
-
-    # Full pipeline (default behavior)
     if s1_exists and s2_exists:
         print("\n=== FULL MODE: S1 + S2 + DUAL ===")
         maybe_run_probes("full")
         print("\n=== Training S1 model ===")
         try:
-            run_training(s1_dir, s2_dir, "s1", epochs=NUM_EPOCHS, bidirectional=BIDIRECTIONAL)
+            run_training(s1_dir, s2_dir, "s1", epochs=NUM_EPOCHS, bidirectional=args.bidirectional)
         except Exception as e:
             print(f"S1 training failed: {e}")
         early_stop_requested = False
         print("Reset early_stop_requested flag for S2 training")
         print("\n=== Training S2 model ===")
         try:
-            run_training(s1_dir, s2_dir, "s2", epochs=NUM_EPOCHS, bidirectional=BIDIRECTIONAL)
+            run_training(s1_dir, s2_dir, "s2", epochs=NUM_EPOCHS, bidirectional=args.bidirectional)
         except Exception as e:
             print(f"S2 training failed: {e}")
         early_stop_requested = False
         print("Reset early_stop_requested flag for dual training")
         print("\n=== Training Dual model ===")
         try:
-            run_training(s1_dir, s2_dir, "dual", epochs=NUM_EPOCHS, bidirectional=BIDIRECTIONAL)
+            run_training(s1_dir, s2_dir, "dual", epochs=NUM_EPOCHS, bidirectional=args.bidirectional)
         except Exception as e:
             print(f"Dual training failed: {e}")
         print("\n=== FULL PIPELINE COMPLETED ===")
@@ -1385,14 +1375,14 @@ def main():
         print("\n=== ONLY S1 AVAILABLE (full mode degrades to s1) ===")
         maybe_run_probes("s1")
         try:
-            run_training(s1_dir, s2_dir, "s1", epochs=NUM_EPOCHS, bidirectional=BIDIRECTIONAL)
+            run_training(s1_dir, s2_dir, "s1", epochs=NUM_EPOCHS, bidirectional=args.bidirectional)
         except Exception as e:
             print(f"S1 training failed: {e}")
     elif s2_exists:
         print("\n=== ONLY S2 AVAILABLE (full mode degrades to s2) ===")
         maybe_run_probes("s2")
         try:
-            run_training(s1_dir, s2_dir, "s2", epochs=NUM_EPOCHS, bidirectional=BIDIRECTIONAL)
+            run_training(s1_dir, s2_dir, "s2", epochs=NUM_EPOCHS, bidirectional=args.bidirectional)
         except Exception as e:
             print(f"S2 training failed: {e}")
 
