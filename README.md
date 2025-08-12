@@ -1,4 +1,4 @@
-## Pipeline for Topological Data Analysis on SEN12FLOOD Dataset
+## Pipeline for Topological Data Analysis on [SEN12FLOOD Dataset](https://clmrmb.github.io/SEN12-FLOOD/)
 
 Python version: 3.9.12
 
@@ -8,7 +8,7 @@ pip install -r requirements.txt
 ```
 
 ### 2. Download Dataset
-Download SEN12FLOOD from Source Cooperative or IEEE Dataport.
+Download SEN12FLOOD from [Source Cooperative](https://source.coop/esa/sen12flood) or [IEEE Dataport](https://ieee-dataport.org/open-access/sen12-flood-sar-and-multispectral-dataset-flood-detection).
 
 ### 3. Preprocess Dataset
 Creates new `s1` and `s2` directories with processed data.
@@ -62,4 +62,4 @@ python visualize_pd.py s1/gray/cubical
 ```
 
 ### Hardware
-Experiments were run on an NVIDIA Titan XP.
+Experiments were run on an NVIDIA Titan XP with CUDA 11.7.
