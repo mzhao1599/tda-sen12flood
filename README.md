@@ -1,4 +1,4 @@
-## SEN12FLOOD Pipeline
+## Pipeline for Topological Data Analysis on SEN12FLOOD Dataset
 
 Python version: 3.9.12
 
