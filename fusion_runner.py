@@ -504,7 +504,7 @@ def save_detailed_predictions_to_file(sweep_results, checkpoint_dir, tag, direct
     if not seq_details:
         print('[WARN] No sequence_details to save.')
         return
-    with open(predictions_file, 'w') as f:
+    with open(predictions_file, 'w', encoding="utf-8", errors="replace") as f:
         f.write(
             f"# tag={tag} optimal_threshold={opt_th:.4f} source={sweep_results.get('threshold_source', 'n/a')}\n"
         )
@@ -660,7 +660,7 @@ def main():
     BATCH_SIZE = args.batch_size
     set_global_determinism(args.seed)
     log_file_path = 'fusion_log.txt'
-    log_fh = open(log_file_path, 'a', buffering=1); atexit.register(log_fh.close)
+    log_fh = open(log_file_path, 'a', buffering=1, encoding="utf-8", errors="replace"); atexit.register(log_fh.close)
     sys.stdout = Tee(log_fh)
     print(f"Log file: {log_file_path}")
     print(f"Config: epochs={NUM_EPOCHS} batch={BATCH_SIZE} seed={args.seed} bidirectional={args.bidirectional} device={DEVICE} deterministic=TRUE")
