@@ -1,4 +1,9 @@
-import glob, os, re, sys, numpy as np, torch, rasterio, atexit, argparse, math, multiprocessing, signal, json
+import sys
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+sys.__stdout__.reconfigure(encoding='utf-8', errors='replace')
+sys.__stderr__.reconfigure(encoding='utf-8', errors='replace')
+import glob, os, re, numpy as np, torch, rasterio, atexit, argparse, math, multiprocessing, signal, json
 from tqdm import tqdm
 import torch.nn as nn
 import torch.nn.functional as F
@@ -1020,7 +1025,7 @@ def save_detailed_predictions_to_file(sweep_results, checkpoint_dir, modality, d
         except Exception:
             return 10**9
     try:
-        with open(predictions_file, 'w') as f:
+        with open(predictions_file, 'w', encoding='utf-8', errors='replace') as f:
             f.write(f"Optimal threshold: {opt_th:.4f}\n")
             f.write("Format: frame_idx prob label pred@0.50 pred@opt\n\n")
             for sd in sorted(seq_details, key=_seq_key):
@@ -1102,7 +1107,7 @@ def run_linear_probe(root: str, modality: str = "s1", probe_type: str = "frame")
         print("ERROR: sklearn not available. Install with: pip install scikit-learn")
         return
     json_file = f"S{1 if modality == 's1' else 2}list.json"
-    json_path = os.path.join("/home/erhai/Desktop/Flood", json_file)
+    json_path = os.path.join(os.path.dirname(__file__), json_file)
     if not os.path.exists(json_path):
         print(f"ERROR: JSON file not found: {json_path}")
         return
@@ -1251,7 +1256,7 @@ def main():
         print(f"ERROR: Neither S1 directory ({s1_dir}) nor S2 directory ({s2_dir}) exists!")
         return
     log_file_path = "resnet_gru.txt"
-    log_file = open(log_file_path, "a", buffering=1)  
+    log_file = open(log_file_path, "a", buffering=1, encoding='utf-8', errors='replace')  
     atexit.register(log_file.close)
     sys.stdout = Tee() 
     print(f"Log file: {log_file_path}")
