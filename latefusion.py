@@ -1,4 +1,6 @@
 import os, math, sys
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 from types import SimpleNamespace
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
@@ -7,7 +9,6 @@ import numpy as np
 RESNET_TXT   = "{modality}_{dir_tag}_resnet_detailed_predictions.txt"
 TOPOGE_TXT   = "{modality}_topoGE_{dir_tag}_detailed_predictions.txt"
 FUSION_TXT   = "{modality}_{dir_tag}_latefusion_detailed_predictions.txt"
-FUSION_CKPT  = "{modality}_{dir_tag}_latefusion.json"
 
 @dataclass
 class FrameRec:
@@ -20,7 +21,7 @@ def _parse_resnet_txt(path: str) -> List[FrameRec]:
     """Parse resnet detailed predictions supporting legacy tabular and new topoGE-style.
     Returns a flat list of FrameRec.
     """
-    with open(path, 'r') as f:
+    with open(path, 'r', encoding='utf-8', errors='replace') as f:
         lines = f.read().splitlines()
     new_style = any(l.startswith('SEQ ') for l in lines) or any(l.startswith('Optimal threshold:') for l in lines)
     out: List[FrameRec] = []
@@ -75,7 +76,7 @@ def _parse_resnet_txt(path: str) -> List[FrameRec]:
 def _parse_topoge_txt(path: str) -> List[FrameRec]:
     out = []
     current_sid = None
-    with open(path, "r") as f:
+    with open(path, "r", encoding='utf-8', errors='replace') as f:
         for raw in f:
             s = raw.strip()
             if not s:
@@ -189,7 +190,7 @@ def _write_fused(modality: str, dir_tag: str, pairs, fused_probs: np.ndarray, op
     out_path = FUSION_TXT.format(modality=modality, dir_tag=dir_tag)
     if opt_th is None:
         opt_th = 0.50
-    with open(out_path, "w") as f:
+    with open(out_path, "w", encoding='utf-8', errors='replace') as f:
         f.write(f"# modality={modality} optimal_threshold={opt_th:.4f}\n")
         f.write("seq_id\tframe_idx\tprob\tlabel\tpred_05\tpred_opt\n")
         for (ra, ta), p in zip(pairs, fused_probs):
@@ -303,7 +304,7 @@ def main():
     log_path = "latefusion.txt"
     orig_stdout = sys.stdout
     try:
-        with open(log_path, "w") as log_fh:
+        with open(log_path, "w", encoding='utf-8', errors='replace') as log_fh:
             sys.stdout = Tee(sys.__stdout__, log_fh)
             print(f"[late_fusion] Logging print output to {log_path}")
             for dir_tag in ("uni", "bi"):
