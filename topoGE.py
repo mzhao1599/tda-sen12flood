@@ -1,9 +1,9 @@
 from __future__ import annotations
 import sys
-sys.stdout.reconfigure(encoding='utf-8')
-sys.stderr.reconfigure(encoding='utf-8')
-sys.__stdout__.reconfigure(encoding='utf-8')
-sys.__stderr__.reconfigure(encoding='utf-8')
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+sys.__stdout__.reconfigure(encoding='utf-8', errors='replace')
+sys.__stderr__.reconfigure(encoding='utf-8', errors='replace')
 import os, re, glob, argparse, math, atexit, signal, random
 import numpy as np
 from typing import List, Tuple, Dict
