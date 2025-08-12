@@ -1,4 +1,3 @@
-#python latefusion.py
 import os, math, sys
 from types import SimpleNamespace
 from typing import Dict, List, Tuple, Optional

@@ -1,0 +1,15 @@
+torch==1.13.1+cu117
+torchvision==0.14.1+cu117
+numpy==1.24.3
+tqdm==4.67.1
+rasterio==1.4.3
+safetensors==0.5.3
+huggingface_hub==0.34.3
+scikit-learn==1.6.1
+cripser==0.0.15
+typing_extensions==4.14.1
+threadpoolctl==3.6.0
+joblib==1.5.1
+POT==0.9.5
+geopandas==1.0.1
+folium==0.20.0

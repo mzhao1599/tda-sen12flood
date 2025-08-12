@@ -1,10 +1,8 @@
-import os, sys, re, glob, math, json, atexit, argparse, random
+import os, sys, re, glob, math, atexit, argparse, random
 from typing import List, Tuple, Dict, Optional
 from collections import defaultdict
-
 import numpy as np
 from tqdm import tqdm
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

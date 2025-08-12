@@ -1,5 +1,3 @@
-#python compute_cubical.py s1/gray
-#python compute_cubical.py s2/gray
 import argparse, warnings
 from pathlib import Path
 import numpy as np

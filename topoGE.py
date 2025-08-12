@@ -8,8 +8,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence, PackedSequence
-#python topoGE.py
-#python topoGE.py --no-bidirectional
 HIDDEN_SIZE   = 256
 BATCH_SIZE    = 8     
 NUM_EPOCHS    = 400
@@ -479,8 +477,7 @@ def parse_args():
     p.add_argument('--top-k-pd', type=int, default=TOP_K_PD, help='Top-k bars per dim retained before embedding')
     p.add_argument('--grid-size', type=int, default=GRID_SIZE, help='Quantile grid size per axis (e.g. 5->25; 6->36)')
     p.add_argument('--seed', type=int, default=DEFAULT_SEED, help='Random seed for deterministic training')
-    p.add_argument('--no-bidirectional', dest='bidirectional', action='store_false', help='Disable bidirectional GRU (default: enabled)')
-    p.set_defaults(bidirectional=True)
+    p.add_argument('--bidirectional', action='store_true', default=False, help='Enable bidirectional GRU (default: disabled)')
     return p.parse_args()
 
 def main():

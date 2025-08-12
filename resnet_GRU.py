@@ -8,8 +8,6 @@ import numpy as np
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence, PackedSequence
 from safetensors.torch import load_file
-#python resnet_GRU.py
-#python resnet_GRU.py --bidirectional
 HIDDEN_SIZE   = 256
 BATCH_SIZE    = 8
 NUM_EPOCHS    = 100

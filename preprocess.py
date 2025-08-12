@@ -44,7 +44,6 @@ def parse_date_from_text(text: str) -> Optional[datetime]:
     matches = list(DATE_RE.finditer(text))
     if not matches:
         return None
-    
     for match in matches:
         y, mo, d = map(int, match.groups())
         try:
@@ -52,7 +51,6 @@ def parse_date_from_text(text: str) -> Optional[datetime]:
                 return datetime(y, mo, d)
         except ValueError:
             continue
-    
     return None
 
 def load_json(path: str) -> Dict:
@@ -120,37 +118,30 @@ def load_s1_linear(pair: Dict[str, str], seq: str = "") -> Optional[Tuple[np.nda
     except RasterioIOError as e:
         print(f"Warning: could not read S1 pair {pair}: {e}")
         return None
-    
     vv = vv.astype(np.float32)
     vh = vh.astype(np.float32)
-    
     vv_mask = np.isfinite(vv) & (vv > 0)
     vh_mask = np.isfinite(vh) & (vh > 0)
     
     total_pixels = vv.size
     vv_valid_pixels = int(vv_mask.sum())
     vh_valid_pixels = int(vh_mask.sum())
-    
     min_valid_pixels = max(1, int(S1_MIN_VALID_FRAC * total_pixels))
-    
     basename = os.path.basename(pair["VV"])
     base_name = basename.replace(".tif", "")
     if base_name.endswith("_VV"):
         base_name = base_name[:-3]
     seq_prefix = f"[{seq}] " if seq else ""
-    
     if vv_valid_pixels < min_valid_pixels or vh_valid_pixels < min_valid_pixels:
         print(f"Warning: {seq_prefix}S1 {base_name} insufficient valid fraction "
               f"(VV {vv_valid_pixels/total_pixels:.2%}, VH {vh_valid_pixels/total_pixels:.2%}) — dropping")
         return None
-    
     vv_std = float(np.std(vv[vv_mask])) if vv_valid_pixels else 0.0
     vh_std = float(np.std(vh[vh_mask])) if vh_valid_pixels else 0.0
     if vv_std < S1_MIN_STD or vh_std < S1_MIN_STD:
         print(f"Warning: {seq_prefix}S1 {base_name} near‑zero variation "
               f"(std VV={vv_std:.6g}, VH={vh_std:.6g}) — dropping")
         return None
-    
     return vv, vh, meta
 
 def s1_to_db(a: np.ndarray) -> np.ndarray:
@@ -199,23 +190,18 @@ def load_s2_stack(base: str, folder: str, seq: str = "") -> Optional[Tuple[np.nd
             print(f"Warning: could not read S2 band {b} for base {base}: {e}")
             return None
         arrays.append(arr.astype(np.float32))
-    
     stack = np.stack(arrays, axis=0) / 10000.0
-    
     iG = S2_BANDS.index("B03"); iN = S2_BANDS.index("B08")
     b03 = stack[iG]; b08 = stack[iN]
     valid_g = np.isfinite(b03) & (b03 > 0)
     valid_n = np.isfinite(b08) & (b08 > 0)
-    
     total_pixels = b03.size
     min_valid_pixels = max(1, int(S2_MIN_VALID_FRAC * total_pixels))
     seq_prefix = f"[{seq}] " if seq else ""
-    
     if valid_g.sum() < min_valid_pixels or valid_n.sum() < min_valid_pixels:
         print(f"Warning: {seq_prefix}S2 {base} insufficient valid fraction "
               f"(B03 {valid_g.mean():.2%}, B08 {valid_n.mean():.2%}) — dropping")
         return None
-    
     valid_both = valid_g & valid_n
     if valid_both.sum() > 0:
         ndwi = (b03 - b08) / (b03 + b08 + 1e-6)
@@ -285,7 +271,6 @@ def assign_indices(s1_items: List[S1Item], s2_items: List[S2Item]) -> None:
         it.idx_m = i
     for i, it in enumerate(s2_items): 
         it.idx_m = i
-    
     records = []
     for it in s1_items:
         records.append({
@@ -305,9 +290,7 @@ def assign_indices(s1_items: List[S1Item], s2_items: List[S2Item]) -> None:
             'fname': it.base_name,
             'item': it
         })
-    
     records.sort(key=lambda r: r['date'])
-    
     ordered = []
     for date, group in groupby(records, key=lambda r: r['date']):
         grp = list(group)
@@ -335,14 +318,12 @@ def assign_indices(s1_items: List[S1Item], s2_items: List[S2Item]) -> None:
             floods = {r['flood'] for r in grp}
             sats = {r['sat'] for r in grp}
             files = [r['fname'] for r in grp]
-            
             if len(floods) == 1 and len(sats) == 1 and 's1' in sats:
                 s1_with_timestamps = []
                 for r in grp:
                     ts = extract_s1_timestamp(r['fname'])
                     if ts:
                         s1_with_timestamps.append((ts, r))
-                
                 if len(s1_with_timestamps) == n:
                     s1_with_timestamps.sort(key=lambda x: x[0])
                     grp = [r for ts, r in s1_with_timestamps]
@@ -359,7 +340,6 @@ def assign_indices(s1_items: List[S1Item], s2_items: List[S2Item]) -> None:
             else:
                 print(f"ERROR: {n} images found for date {date}; mixed flood statuses; images {files}")
         ordered.extend(grp)
-    
     for idx_c, record in enumerate(ordered):
         record['item'].idx_c = idx_c
 
@@ -370,40 +350,29 @@ def main():
     parser.add_argument('--sen12-root', default='.', help='Root directory containing sequence data (default: current directory)')
     parser.add_argument('--json-s1', default='S1list.json', help='S1 index JSON file (default: S1list.json)')
     parser.add_argument('--json-s2', default='S2list.json', help='S2 index JSON file (default: S2list.json)')
-    
     args = parser.parse_args()
-    
     s1_dir = args.s1_dir
     s2_dir = args.s2_dir
     sen12_root = args.sen12_root
-    
     safe_mkdir(s1_dir)
     safe_mkdir(s2_dir)
     safe_mkdir(os.path.join(s1_dir, "gray"))
     safe_mkdir(os.path.join(s1_dir, "stacked"))
     safe_mkdir(os.path.join(s2_dir, "gray"))
     safe_mkdir(os.path.join(s2_dir, "stacked"))
-
     idx_s1 = load_json(args.json_s1)
     idx_s2 = load_json(args.json_s2)
-
     all_dirs = os.listdir(sen12_root)
     seq_dirs = [d for d in all_dirs if d.isdigit()]
     print(f"Found {len(seq_dirs)} sequence directories out of {len(all_dirs)} total directories")
-    
     seq_ids = sorted(seq_dirs, key=lambda s: (len(s) == 4, int(s)))
-
     rows: List[Tuple[str,str,str,int,int,str,int]] = []
-
     skipped_dates = []
     skipped_s1_pairs = []
     skipped_s2_bases = []
-
     for seq in seq_ids:
         print(f"Processing sequence: {seq}")
         seq_dir = os.path.join(sen12_root, seq)
-
-
         s1_items: List[S1Item] = []
         for base, files in collect_s1_pairs(seq_dir).items():
             dt = parse_date_from_text(base)
@@ -419,7 +388,6 @@ def main():
             date_iso = dt.date().isoformat()
             is_flood = flood_flag(idx_s1, seq, date_iso)
             s1_items.append(S1Item(dt, vv_db, vh_db, denom, meta, is_flood, base))
-
         s2_items: List[S2Item] = []
         for base in find_s2_bases(seq_dir):
             dt = parse_date_from_text(base)
@@ -435,10 +403,7 @@ def main():
             date_iso = dt.date().isoformat()
             is_flood = flood_flag(idx_s2, seq, date_iso)
             s2_items.append(S2Item(dt, stack, gray_tda, ndwi_phys, mask, meta, is_flood, base))
-
         assign_indices(s1_items, s2_items)
-
-        # Hypothesis enforcement: after the first flood date, all subsequent frames are labeled as flooded (1)
         flood_start_iso = build_flood_start(idx_s1, idx_s2, seq)
         if flood_start_iso:
             try:
@@ -452,36 +417,27 @@ def main():
                 print(f"Hypothesis applied: sequence {seq} flood start {flood_start_iso}; all frames from that date forward set to FLOOD=1")
             except ValueError:
                 print(f"Warning: could not parse flood start date '{flood_start_iso}' for sequence {seq}; skipping hypothesis relabeling")
-
         for it in s1_items:
             date_str = it.dt.strftime("%Y%m%d")
             stem = f"{seq}_{it.idx_c:02d}_s1_{it.idx_m:02d}_{date_str}_{it.flood}"
             stacked_path = os.path.join(s1_dir, "stacked", stem + ".tif")
             gray_path = os.path.join(s1_dir, "gray", stem + ".tif")
-
             write_geotiff(stacked_path, [it.vv_db, it.vh_db], it.meta, ["VV_dB","VH_dB"])
             write_geotiff(gray_path, [it.denom], it.meta, ["s1_gray"])
-
             rows.append((seq, date_str, "s1", it.idx_c, it.idx_m, os.path.basename(stem+".tif"), it.flood))
-
         for it in s2_items:
             date_str = it.dt.strftime("%Y%m%d")
             stem = f"{seq}_{it.idx_c:02d}_s2_{it.idx_m:02d}_{date_str}_{it.flood}"
             stacked_path = os.path.join(s2_dir, "stacked", stem + ".tif")
             gray_path = os.path.join(s2_dir, "gray", stem + ".tif")
-
             write_geotiff(stacked_path, list(it.stack), it.meta, S2_BANDS)
             write_geotiff(gray_path, [it.gray_tda], it.meta, ["s2_gray_tda"])
-
             rows.append((seq, date_str, "s2", it.idx_c, it.idx_m, os.path.basename(stem+".tif"), it.flood))
-
     rows.sort(key=lambda r: ((len(r[0]) == 4, int(r[0])), r[3]))
-
-    with open(os.path.join(s2_dir, "all_images.csv"), "w", newline="") as f:
+    with open(os.path.join(sen12_root, "all_images.csv"), "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["seq_id","date","sat","idx_c","idx_m","filename","flood"])
         w.writerows(rows)
-
     if skipped_dates:
         print(f"Skipped {len(skipped_dates)} items due to date parsing failures")
         print(f"Skipped date items: {skipped_dates}")
@@ -491,7 +447,6 @@ def main():
     if skipped_s2_bases:
         print(f"Skipped {len(skipped_s2_bases)} S2 acquisitions due to missing bands")
         print(f"Skipped S2 bases: {skipped_s2_bases}")
-
     print(f"Done. Wrote {len(rows)} rows to all_images.csv")
 
 if __name__ == "__main__":

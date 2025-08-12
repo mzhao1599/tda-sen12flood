@@ -1,4 +1,3 @@
-#python download.py
 from pathlib import Path
 from huggingface_hub import snapshot_download
 BIGEARTH_MODELS = ["resnet50-s1-v0.2.0", "resnet50-s2-v0.2.0"]
