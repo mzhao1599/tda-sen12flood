@@ -22,7 +22,7 @@ python compute_cubical.py s1/gray
 python compute_cubical.py s2/gray
 ```
 
-### 5. Download BIFOLD BigEarthNet v2.0 Pretrained ResNet50 Weights
+### 5. Download [BIFOLD BigEarthNet v2.0](https://huggingface.co/BIFOLD-BigEarthNetv2-0) Pretrained ResNet50 Weights
 ```bash
 python download.py
 ```
