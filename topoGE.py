@@ -1,5 +1,10 @@
 from __future__ import annotations
-import os, re, glob, sys, argparse, math, atexit, signal, random
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
+sys.__stdout__.reconfigure(encoding='utf-8')
+sys.__stderr__.reconfigure(encoding='utf-8')
+import os, re, glob, argparse, math, atexit, signal, random
 import numpy as np
 from typing import List, Tuple, Dict
 from tqdm import tqdm
@@ -401,7 +406,7 @@ def save_detailed_predictions_to_file(sweep_results, checkpoint_dir, modality, d
     else:
         predictions_file=os.path.join(checkpoint_dir, f"{modality}_topoGE_detailed_predictions.txt")
     seq_details=sweep_results.get('sequence_details', []); opt_th=sweep_results.get('optimal_threshold',0.5)
-    with open(predictions_file,'w') as f:
+    with open(predictions_file,'w', encoding = 'utf-8', errors='replace') as f:
         f.write(f"Optimal threshold: {opt_th:.4f}\n")
         f.write("Format: frame_idx prob label pred@0.50 pred@opt\n\n")
         def _seq_key(d):
@@ -436,11 +441,11 @@ def run_training(s1_dir: str, s2_dir: str, modality: str='s1', epochs: int=NUM_E
         init_quartile_qpersemb_centers(ds_full, train_idx, is_dual=False, single_mod_id=(0 if modality=='s1' else 1))
     g = torch.Generator(); g.manual_seed(seed)
     if modality=='dual':
-        train_dl=DataLoader(torch.utils.data.Subset(ds_full, train_idx), BATCH_SIZE, shuffle=True, collate_fn=collate_pd_dual, num_workers=2, worker_init_fn=_seed_worker, generator=g)
-        val_dl  =DataLoader(torch.utils.data.Subset(ds_full, val_idx), BATCH_SIZE, shuffle=False, collate_fn=collate_pd_dual, num_workers=2, worker_init_fn=_seed_worker, generator=g); is_dual=True
+        train_dl=DataLoader(torch.utils.data.Subset(ds_full, train_idx), BATCH_SIZE, shuffle=True, collate_fn=collate_pd_dual, num_workers=0, worker_init_fn=_seed_worker, generator=g)
+        val_dl  =DataLoader(torch.utils.data.Subset(ds_full, val_idx), BATCH_SIZE, shuffle=False, collate_fn=collate_pd_dual, num_workers=0, worker_init_fn=_seed_worker, generator=g); is_dual=True
     else:
-        train_dl=DataLoader(torch.utils.data.Subset(ds_full, train_idx), BATCH_SIZE, shuffle=True, collate_fn=collate_pd_single, num_workers=2, worker_init_fn=_seed_worker, generator=g)
-        val_dl  =DataLoader(torch.utils.data.Subset(ds_full, val_idx), BATCH_SIZE, shuffle=False, collate_fn=collate_pd_single, num_workers=2, worker_init_fn=_seed_worker, generator=g); is_dual=False
+        train_dl=DataLoader(torch.utils.data.Subset(ds_full, train_idx), BATCH_SIZE, shuffle=True, collate_fn=collate_pd_single, num_workers=0, worker_init_fn=_seed_worker, generator=g)
+        val_dl  =DataLoader(torch.utils.data.Subset(ds_full, val_idx), BATCH_SIZE, shuffle=False, collate_fn=collate_pd_single, num_workers=0, worker_init_fn=_seed_worker, generator=g); is_dual=False
     pos_weight,log_odds,pos_rate=calculate_class_weights_and_bias(ds_full, train_idx)
     model=(DualPDGRU(bidirectional=bidirectional).to(DEVICE) if is_dual else PDGRU(bidirectional=bidirectional).to(DEVICE))
     init_classification_bias(model, log_odds)
@@ -491,7 +496,7 @@ def main():
     globals()['FEAT_DIM']=2*(GRID_SIZE*GRID_SIZE)
     s1_dir=args.s1_dir; s2_dir=args.s2_dir
     s1_exists=os.path.isdir(s1_dir); s2_exists=os.path.isdir(s2_dir)
-    log_file_path='topoGE_gru.txt'; log_fh=open(log_file_path,'a', buffering=1); atexit.register(log_fh.close); globals()['log_file']=log_fh; sys.stdout=Tee()
+    log_file_path='topoGE_gru.txt'; log_fh=open(log_file_path,'a', buffering=1, encoding='utf-8', errors='replace'); atexit.register(log_fh.close); globals()['log_file']=log_fh; sys.stdout=Tee()
     print(f"Log file: {log_file_path}")
     print(f"Configuration: S1={s1_dir} ({'exists' if s1_exists else 'MISSING'}) S2={s2_dir} ({'exists' if s2_exists else 'MISSING'}) Batch={BATCH_SIZE} Epochs={NUM_EPOCHS} LR={LR} TopK={TOP_K_PD} Grid={GRID_SIZE} FeatDim={FEAT_DIM} Seed={args.seed} BiGRU={args.bidirectional}")
     if s1_exists and s2_exists:
