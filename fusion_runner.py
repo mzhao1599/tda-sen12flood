@@ -24,6 +24,17 @@ TOPO_DIM      = 2 * (GRID_SIZE * GRID_SIZE)
 FUSION_DIM    = RESNET_DIM + TOPO_DIM
 MOD_EMBED_DIM = 8
 
+
+def seed_worker(worker_id: int):
+    """Set NumPy's seed for DataLoader workers.
+
+    On Windows, DataLoader workers are launched with the ``spawn`` start method,
+    which requires worker initialization functions to be pickleable. Defining
+    this helper at module scope avoids pickling errors that arise when using
+    lambdas or nested functions.
+    """
+    np.random.seed(DEFAULT_SEED + worker_id)
+
 def set_global_determinism(seed: int):
     """Force strict determinism; raise if PyTorch cannot comply.
 
@@ -574,8 +585,24 @@ def run_late_fusion_single(modality: str, stacked_dir: str, cubical_dir: str,
     train_buckets = [ds._seqs[i] for i in train_idx]
     pos_weight, log_odds, pos_rate = calculate_class_weights_and_bias_from_buckets(train_buckets)
     g = torch.Generator(); g.manual_seed(DEFAULT_SEED)
-    train_dl = DataLoader(torch.utils.data.Subset(ds, train_idx), BATCH_SIZE, shuffle=True,  collate_fn=collate_fusion_single, num_workers=2, worker_init_fn=lambda wid: np.random.seed(DEFAULT_SEED+wid), generator=g)
-    val_dl   = DataLoader(torch.utils.data.Subset(ds, val_idx),   BATCH_SIZE, shuffle=False, collate_fn=collate_fusion_single, num_workers=2, worker_init_fn=lambda wid: np.random.seed(DEFAULT_SEED+wid), generator=g)
+    train_dl = DataLoader(
+        torch.utils.data.Subset(ds, train_idx),
+        BATCH_SIZE,
+        shuffle=True,
+        collate_fn=collate_fusion_single,
+        num_workers=2,
+        worker_init_fn=seed_worker,
+        generator=g,
+    )
+    val_dl = DataLoader(
+        torch.utils.data.Subset(ds, val_idx),
+        BATCH_SIZE,
+        shuffle=False,
+        collate_fn=collate_fusion_single,
+        num_workers=2,
+        worker_init_fn=seed_worker,
+        generator=g,
+    )
     model = FusionGRU(input_dim=FUSION_DIM, hidden=HIDDEN_SIZE, bidirectional=bidirectional).to(DEVICE)
     with torch.no_grad():
         model.head.bias.fill_(log_odds)
@@ -619,8 +646,24 @@ def run_late_fusion_dual(s1_stacked_dir: str, s2_stacked_dir: str,
     pos_rate = max(0.001, min(0.999, pos_rate)); neg_rate = max(0.001, min(0.999, neg_rate))
     pos_weight = neg_rate/pos_rate; log_odds = math.log(pos_rate/neg_rate)
     g = torch.Generator(); g.manual_seed(DEFAULT_SEED)
-    train_dl = DataLoader(torch.utils.data.Subset(ds, train_idx), BATCH_SIZE, shuffle=True,  collate_fn=collate_fusion_dual, num_workers=2, worker_init_fn=lambda wid: np.random.seed(DEFAULT_SEED+wid), generator=g)
-    val_dl   = DataLoader(torch.utils.data.Subset(ds, val_idx),   BATCH_SIZE, shuffle=False, collate_fn=collate_fusion_dual, num_workers=2, worker_init_fn=lambda wid: np.random.seed(DEFAULT_SEED+wid), generator=g)
+    train_dl = DataLoader(
+        torch.utils.data.Subset(ds, train_idx),
+        BATCH_SIZE,
+        shuffle=True,
+        collate_fn=collate_fusion_dual,
+        num_workers=2,
+        worker_init_fn=seed_worker,
+        generator=g,
+    )
+    val_dl = DataLoader(
+        torch.utils.data.Subset(ds, val_idx),
+        BATCH_SIZE,
+        shuffle=False,
+        collate_fn=collate_fusion_dual,
+        num_workers=2,
+        worker_init_fn=seed_worker,
+        generator=g,
+    )
     model = DualFusionGRU(input_dim=FUSION_DIM, hidden=HIDDEN_SIZE, bidirectional=bidirectional).to(DEVICE)
     with torch.no_grad():
         model.head.bias.fill_(log_odds)
@@ -693,4 +736,9 @@ def main():
         print("Dual fusion skipped (need both S1 and S2 stacked dirs present)")
 
 if __name__ == '__main__':
+    # ``freeze_support`` is required for compatibility with Windows multiprocessing
+    # when this script is executed via spawn (the default on Windows).
+    import multiprocessing
+
+    multiprocessing.freeze_support()
     main()
