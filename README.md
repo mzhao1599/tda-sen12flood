@@ -26,8 +26,8 @@ Reported in the paper (Table 1 of arXiv:2606.26204), frame-level, on the held-ou
 
 What this shows:
 
-- **Topology alone carries real flood signal.** Topo-GRU uses a 200-number feature per image, about a tenth of the ResNet's 2048, and still reaches 0.914–0.958 accuracy.
-- **Topology complements the CNN.** Concatenating the two features gives the best dual-sensor model: 0.989 accuracy against 0.974 for ResNet50-GRU on the same input, with false positives down from 6 to 3 and false negatives from 19 to 7 (Table 2 of the paper).
+- **Topology alone carries flood signal.** Topo-GRU uses a 200-number feature per image, about a tenth of the ResNet's 2048, and still reaches 0.914–0.958 accuracy.
+- **Topology complements the CNN.** Concatenating the two features gives the best dual-sensor model: 0.989 accuracy against 0.974 for ResNet50-GRU on the same input, with false positives down from 6 to 3 and false negatives from 19 to 7 (Table 2 of the paper). Fusion-GRU also uses different CNN features (frozen encoders fine-tuned on each sensor separately), so this comparison does not isolate the topology features alone.
 
 These numbers come from the paper. This repository does not include training logs or checkpoints, so re-running the pipeline is the way to check them (see [Reproduce](#reproduce) and [Limitations](#limitations)).
 
@@ -37,7 +37,7 @@ Floods need to be mapped quickly, but optical satellites (Sentinel-2) cannot see
 
 ## What topology adds
 
-Flood water shows up as large, connected dark regions in radar backscatter and as connected high-water-index regions in optical images. Persistent homology summarizes exactly that kind of structure (how many regions there are, how large and how separated) as a short list of numbers, independent of where in the image they sit.
+Flood water shows up as large, connected dark regions in radar backscatter and as connected high-water-index regions in optical images. Persistent homology summarizes that kind of structure (how many regions there are, how large and how separated) as a short list of numbers, independent of where in the image they sit.
 
 <p align="center">
   <img src="docs/sar-persistence.png" width="720" alt="Left: a flooded Sentinel-1 radar image from SEN12-FLOOD, with a dark branching flood channel. Right: its persistence diagram, with H0 points in blue and H1 points in red plotted by birth and death value.">
@@ -109,7 +109,7 @@ Add `--bidirectional` to the three training scripts for bidirectional GRUs. Each
 ## Limitations
 
 - **The held-out split doubles as the validation set.** The code uses the same held-out sequences to pick checkpoints, choose the reported threshold and tune the late-fusion weight. The numbers above are therefore optimistic compared with a separate test set.
-- **The code does not match the paper in every setting.** The paper describes up to 200 epochs, one learning rate of 0.001, early stopping for all models, a low-variance cutoff of 0.001 and a 16-d modality embedding. The code uses 100 / 400 / 100 epochs (ResNet / Topo / Fusion), separate learning rates for the ResNet backbone (1e-4) and the GRU (1e-3), no early stopping for Fusion-GRU, a cutoff of 0.01, and a 16-d embedding for ResNet-GRU but 8-d for Topo- and Fusion-GRU.
+- **The code does not match the paper in every setting.** The paper describes up to 200 epochs, one learning rate of 0.001, early stopping for all models, a cutoff of 0.001 on the standard deviation of valid pixels and a 16-d modality embedding. The code uses 100 / 400 / 100 epochs (ResNet / Topo / Fusion), separate learning rates for the ResNet backbone (1e-4) and the GRU (1e-3), no early stopping for Fusion-GRU, a cutoff of 0.01, and a 16-d embedding for ResNet-GRU but 8-d for Topo- and Fusion-GRU.
 - **The dual ResNet50-GRU starts from BigEarthNet weights, not the fine-tuned single-sensor encoders.** It looks for `resnet_gru_s1_finetune.pt`, but single-sensor training saves `resnet_gru_s1_finetune_uni.pt`.
 - One dataset, one random seed per configuration, no error bars.
 - The "flood start" relabelling assumes water does not recede within a sequence.
