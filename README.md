@@ -110,7 +110,6 @@ Add `--bidirectional` to the three training scripts for bidirectional GRUs. Each
 
 - **The held-out split doubles as the validation set.** The code uses the same held-out sequences to pick checkpoints, choose the reported threshold and tune the late-fusion weight. The numbers above are therefore optimistic compared with a separate test set.
 - **The code does not match the paper in every setting.** The paper describes up to 200 epochs, one learning rate of 0.001, early stopping for all models, a cutoff of 0.001 on the standard deviation of valid pixels and a 16-d modality embedding. The code uses 100 / 400 / 100 epochs (ResNet / Topo / Fusion), separate learning rates for the ResNet backbone (1e-4) and the GRU (1e-3), no early stopping for Fusion-GRU, a cutoff of 0.01, and a 16-d embedding for ResNet-GRU but 8-d for Topo- and Fusion-GRU.
-- **The dual ResNet50-GRU starts from BigEarthNet weights, not the fine-tuned single-sensor encoders.** It looks for `resnet_gru_s1_finetune.pt`, but single-sensor training saves `resnet_gru_s1_finetune_uni.pt`.
 - One dataset, one random seed per configuration, no error bars.
 - The "flood start" relabelling assumes water does not recede within a sequence.
 - No training logs, checkpoints or result files are committed.
@@ -128,3 +127,5 @@ Add `--bidirectional` to the three training scripts for bidirectional GRUs. Each
 ```
 
 This work was funded by the Office of Naval Research under the NRL Base Program and the NRL Science and Engineering Apprenticeship Program (SEAP). SEN12-FLOOD is by Rambour et al.; the pretrained weights are from BIFOLD's BigEarthNet v2.0.
+
+**License:** all rights reserved; published for reference only. See [LICENSE](LICENSE).
