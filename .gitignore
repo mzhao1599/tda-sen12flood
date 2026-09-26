@@ -1,0 +1,21 @@
+# data and generated outputs
+s1/
+s2/
+labels/
+features/
+centers/
+pretrained_models/
+pd_visualizations/
+*.tif
+*.npy
+*.pt
+*_detailed_predictions.txt
+*.txt
+!requirements.txt
+all_images.csv
+all_sequences_map.html
+S1list.json
+S2list.json
+
+__pycache__/
+.DS_Store
